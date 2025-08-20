@@ -1,0 +1,8 @@
+.env
+langchain-openai
+langchain-community
+pydantic
+python-dotenv
+PyPDF2
+requests
+pytz
