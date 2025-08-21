@@ -48,7 +48,7 @@ class PDFQATool:
         self.logger.info(f"[RAG] Context used for answer: {context[:500]}...")
         if not context.strip():
             self.logger.warning("[RAG] No relevant context found for query.")
-            return "Sorry, I can only answer questions related to ServiceZone UAE or ServiceZone meetings, or our services. Please ask something related."
+            return "Sorry, I can only answer questions related to ServiceZone UAE Properties, meetings, or our services. Please ask something related."
         recent = conversation_history[-4:] if len(conversation_history) > 4 else conversation_history
         self.logger.info(f"[RAG] Recent conversation history: {recent}")
         topics_prompt = f"Given these conversation messages, identify the main topic being discussed:\n{chr(10).join(recent)}\nReturn ONLY the topic being discussed, nothing else."
@@ -58,8 +58,8 @@ class PDFQATool:
         system_context = f"Current topic: {current_topic}\nProduct info: {context}\nLead info: {lead_info if lead_info else 'None'}\nLead state: {lead_state}"
         prompt = f"""
 You are a friendly sales assistant for ServiceZone UAE or ServiceZone.
-You must only answer questions related to ServiceZone UAE meetings, or our services or ServiceZone.
-If the user's question is not related, politely respond: 'Sorry, I can only answer questions related to ServiceZone UAE meetings, or our services,location. Please ask something related.'
+You must only answer questions related to ServiceZone Properties, meetings, or our services or ServiceZone.
+If the user's question is not related, politely respond: 'Sorry, I can only answer questions related to ServiceZone UAE Property, meetings, or our services,location or ServiceZone. Please ask something related.'
 Never answer general knowledge or unrelated questions.
 
 System Context:
