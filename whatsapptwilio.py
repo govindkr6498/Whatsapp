@@ -1,28 +1,19 @@
-# app.py
-from fastapi import FastAPI, Request, Response
+# filename: whatsapptwilio.py
+from fastapi import FastAPI, Request
+from fastapi.responses import Response
 from twilio.twiml.messaging_response import MessagingResponse
-import re
+import time
 
-# ---- Your RAG helper (already in your project) ----
-from main import SalesRAGAgent  # uses PDFs for fallback FAQ/Q&A
+from main import SalesRAGAgent
 
 app = FastAPI()
 
-# ========= Persistent (in-memory) sessions =========
-# In production, replace with Redis/DB.
-sessions = {}  # key: wa_number (e.g., "+9715..."), value: dict stage/state
-
-def wa_key(from_field: str) -> str:
-    """Normalize Twilio 'From' ('whatsapp:+9715...') -> '+9715...'"""
-    if not from_field:
-        return "unknown"
-    return from_field.replace("whatsapp:", "").strip()
-
-# ========= RAG bot setup =========
-pdf_path = "ServiceZoneUAE.pdf"
+# Initialize chatbot with the specific PDF
+pdf_path = 'ServiceZoneUAE.pdf'
 chatbot = SalesRAGAgent(pdf_path)
+sessions = {}  # simple in-memory session store
 
-# ========= Business data =========
+# ===== Business data =====
 services = {
     "1": "Interior house painting",
     "2": "Exterior house painting",
@@ -33,34 +24,54 @@ services = {
     "7": "Office painting",
     "8": "Apartment paint",
     "9": "Home painting",
-    "10":"other options",
+    "10": "Door Painting",
+    "11": "other options",
 }
 
 time_slots = {
-    "1": "Today 6–8 pm",
-    "2": "Tomorrow 10–12 am",
-    "3": "Tomorrow 4–6 pm",
+    "1": "Today 6–8 am",
+    "2": "Today 10–12 am",
+    "3": "Today 2–4 pm",
+    "4": "Today 4–6 pm",
+    "5": "Tomorrow 6–8 am",
+    "6": "Tomorrow 10–12 pm",
+    "7": "Tomorrow 2–4 pm",
+    "8": "Tomorrow 4–6 pm",
 }
 
+# Expert contact
 expert_name = "Mohammad"
-expert_phone = "+971505481357"
-expert_walink = "https://wa.me/971505481357"
+expert_phone_raw = "971505481357" 
+expert_phone_disp = "+971505481357"
 
-# ========= Intent detection =========
-PRICING_PATTERNS = [
-    r"\bprice\b", r"\bpricing\b", r"\bprice\s*list\b", r"\bpricelist\b",
-    r"\bquote\b", r"\bestimate\b", r"\bquotation\b",
-    r"\bcharges?\b", r"\bcosts?\b", r"\brates?\b",
-    r"how\s*much", r"per\s*sq\s*ft", r"\bpsf\b", r"\bsq\s*ft\b"
-]
+# Keywords
+PRICING_KEYWORDS = {
+    "price", "pricing", "prices", "priced",
+    "quote", "quotes", "quotation", "quotations",
+    "estimate", "estimates", "estimation",
+    "cost", "costs", "costing",
+    "rate", "rates", "rating",
+    "charge", "charges", "charging",
+    "fee", "fees",
+    "amount", "budget", "expense", "expenses",
+    "how much", "what is the cost", "what's the price",
+    "how much does it cost", "how much will it cost",
+    "what is the rate", "what's the rate",
+    "how much do you charge", "what do you charge"
+}
+GRATITUDE = {"thank you", "thanks", "thx", "thank u", "ty"}
+ACKS = {"ok", "okay", "k", "sure", "great", "cool", "fine", "got it"}
 
-def contains_pricing_intent(text: str) -> bool:
+# ===== Helpers =====
+def contains_pricing(text: str) -> bool:
     t = (text or "").lower()
-    return any(re.search(p, t) for p in PRICING_PATTERNS)
+    return any(k in t for k in PRICING_KEYWORDS)
 
-# ========= Helpers =========
-def send_menu(tw: MessagingResponse) -> None:
-    menu_text = (
+def normalize(text: str) -> str:
+    return (text or "").lower().strip()
+
+def send_service_menu(tw: MessagingResponse) -> None:
+    tw.message(
         "**Welcome to ServiceZone UAE! Please choose a painting service to get started:**\n\n"
         "1. Interior house painting\n"
         "2. Exterior house painting\n"
@@ -71,178 +82,191 @@ def send_menu(tw: MessagingResponse) -> None:
         "7. Office painting\n"
         "8. Apartment paint\n"
         "9. Home painting\n"
-        "10. other options\n"
-        "Reply with the Number of your choice (**1 to 9**)"
+        "10. Door Painting\n"
+        "11. other options\n"
+        
+        "Reply with the number of your choice (1 to 11)"
     )
-    tw.message(menu_text)
 
-def send_expert_details(tw: MessagingResponse, state: dict) -> None:
-    state["stage"] = "handoff"
-    service_name = state.get("service", "painting")
-    tw.message(f"Got it — connecting you to our {service_name} estimator now.")
-    tw.message(f"{expert_name} ({expert_phone})")
-    tw.message(f"You can also chat directly here: {expert_walink}")
+def send_actions_menu(tw: MessagingResponse, location: str) -> None:
+    tw.message(
+        f"Got it: {location}.\nWhat would you like to do next?\n"
+        "1. Book free site visit\n"
+        "2. Talk to expert\n"
+        "Reply with 1 or 2"
+    )
 
-def lookup_faq(message: str):
-    # Placeholder if you later add quick Excel FAQs
-    return None
+def send_slot_menu(tw: MessagingResponse, location: str) -> None:
+    tw.message(
+        f"Please choose a time slot for a free site visit at {location}:\n"
+        "1. Today 6–8 am\n"
+        "2. Today 10–12 am\n"
+        "3. Today 2–4 pm\n"
+        "4. Today 4–6 pm\n"        
+        "5. Tomorrow 6–8 am\n"
+        "6. Tomorrow 10–12 pm\n"        
+        "7. Tomorrow 2–4 pm\n"
+        "8. Tomorrow 4–6 pm\n"
+        "Reply 1, 2,3,4,5,6,7 or 8"
+    )
 
-def rag_fallback(user_text: str) -> str:
-    """Call PDF bot safely, with default fallback."""
-    try:
-        return chatbot.process(user_text)["response"]
-    except Exception:
-        return "I didn’t get that. You can type MENU anytime to start again."
+def is_after_step4(state: dict) -> bool:
+    return state.get("stage") == "handoff"
 
-# ========= Webhook =========
+def handoff_message(tw: MessagingResponse, state: dict, user_id: str) -> None:
+    now = time.time()
+    last = state.get("handoff_time", 0)
+    if now - last < 30:
+        tw.message("I've shared our estimator's contact above. You can message them directly via the link.")
+        return
+
+    state["handoff_time"] = now
+    session_id = f"{user_id[-4:]}{int(now)}"
+    deep_link = f"https://wa.me/{expert_phone_raw}?text=Hi%20I'm%20from%20ServiceZone%20Ref%3A{session_id}"
+
+    tw.message("Got it — connecting you to our painting estimator now.")
+    tw.message(f"Painting Estimator – {expert_name} ({expert_phone_disp})")
+    tw.message(f"You can also chat directly here: {deep_link}")
+
+def send_expert_contact(tw: MessagingResponse) -> None:
+    """Send expert contact information"""
+    tw.message(f"Please contact our painting estimator directly for pricing questions:")
+    tw.message(f"👤 {expert_name}")
+    tw.message("https://wa.me/971505481357")
+    # tw.message("They'll help you with all your pricing queries.")
+
+# def handle_irrelevant_question(tw: MessagingResponse, user: str, body: str) -> None:
+#     """Handle irrelevant questions after meeting schedule or expert communication"""
+#     print(f"Irrelevant question from user {user}: '{body}'")
+#     # tw.message("I don't know.")
+#     reply_text = chatbot.process(body)['response']
+#     print(f"reply_text : '{reply_text}'")
+#     # Twilio WhatsApp response
+#     twilio_resp = MessagingResponse()
+#     print(f"twilio_resp : '{twilio_resp}'")
+#     twilio_resp.message(reply_text)  
+#     print(f"twilio_resp After: '{twilio_resp}'")
+#     # return Response(content=str(twilio_resp), media_type="application/xml")    
+#     return Response(content=str(twilio_resp), media_type="application/xml")
+
+def handle_irrelevant_question(tw: MessagingResponse, user: str, body: str) -> None:
+    """Handle irrelevant questions after meeting schedule or expert communication"""
+    print(f"Irrelevant question from user {user}: '{body}'")
+    
+    # Use the chatbot to get the response
+    reply_text = chatbot.process(body)['response']
+    print(f"reply_text : '{reply_text}'")
+    
+    # Add the response to the existing tw object (don't create a new one)
+    tw.message(reply_text)
+    print(f"Response added to tw object")
+# ===== Webhook =====
 @app.post("/webhook/whatsapp")
 async def whatsapp_webhook(request: Request):
     form = await request.form()
-    body_raw = form.get("Body", "") or ""
-    body = body_raw.strip()
-    from_field = form.get("From")
-    user_id = wa_key(from_field)
+    body = normalize(form.get("Body"))
+    user = (form.get("From") or "").replace("whatsapp:", "")
 
-    # Get or create session
-    state = sessions.get(user_id)
-    if state is None:
-        state = {"stage": "waiting_service"}  # default starting stage
-        sessions[user_id] = state
-
+    state = sessions.get(user, {"stage": "waiting_service"})
     tw = MessagingResponse()
 
-    # --- Global commands ---
-    if body.lower() in {"hi", "hello", "menu", "start"}:
-        state.clear()
-        state.update({"stage": "waiting_service"})
-        send_menu(tw)
-        sessions[user_id] = state
+    # ---- Global commands
+    if body in {"hi", "hello", "menu", "start"}:
+        state = {"stage": "waiting_service"}
+        send_service_menu(tw)
+        sessions[user] = state
         return Response(str(tw), media_type="application/xml")
 
-    if body.lower() in {"thanks", "thank you", "thx"}:
-        tw.message(
-            "You’re welcome! If you’d like, you can book a free site visit or talk to an expert.\n"
-            "1. Book free site visit\n2. Talk to expert"
-        )
-        sessions[user_id] = state
-        return Response(str(tw), media_type="application/xml")
-
-    # --- Fast-track pricing intent at any stage ---
-    if contains_pricing_intent(body):
-        if state.get("stage") == "handoff":
-            tw.message("You’re already connected with our estimator ✅. Please continue with them directly.")
+    # ---- Global gratitude / acknowledgements
+    if body in GRATITUDE or body in ACKS:
+        if is_after_step4(state):
+            tw.message("👍 You're welcome! 😊 If you need anything else, just ask")
         else:
-            send_expert_details(tw, state)
-        sessions[user_id] = state
+            tw.message("You're welcome! 😊 If you need anything else, just ask")
         return Response(str(tw), media_type="application/xml")
 
-    # --- If already in handoff: allow non-pricing Qs to hit PDF bot ---
+    # ---- Global pricing trigger (only valid AFTER step 4)
+    if contains_pricing(body):
+        if is_after_step4(state):
+            # Already connected with expert - provide expert contact details
+            send_expert_contact(tw)
+        else:
+            # Not yet connected - connect them to expert
+            handoff_message(tw, state, user)
+            state["stage"] = "handoff"
+            sessions[user] = state
+        return Response(str(tw), media_type="application/xml")
+
+    # ---- If already handed off - handle irrelevant questions
     if state.get("stage") == "handoff":
-        tw.message(rag_fallback(body))
-        sessions[user_id] = state
-        return Response(str(tw), media_type="application/xml")
-
-    # ================== Stage machine ==================
-    stage = state.get("stage")
-
-    # Stage: done (post-booking)
-    if stage == "done":
-        if body.lower() == "reschedule":
-            state["stage"] = "choose_slot"
-            tw.message(
-                "**Please choose a time slot:**\n"
-                "1. Today 6–8 pm\n"
-                "2. Tomorrow 10–12 am\n"
-                "3. Tomorrow 4–6 pm\n"
-                "Reply with 1, 2 or 3"
-            )
-        elif body.lower() == "cancel":
-            state["stage"] = "offer_actions"
-            tw.message(
-                "Cancelled. What would you like to do next?\n"
-                "1. Book free site visit\n"
-                "2. Talk to expert"
-            )
+        # Check if it's a relevant question (gratitude, pricing, etc.)
+        if body in GRATITUDE or body in ACKS:
+            # These are handled above in global sections
+            pass
+        elif contains_pricing(body):
+            # Pricing questions are handled above in the global pricing section
+            pass
         else:
-            faq_ans = lookup_faq(body)
-            if faq_ans:
-                tw.message(faq_ans + "\n1. Book free site visit\n2. Talk to expert")
-            else:
-                tw.message(rag_fallback(body))
-        sessions[user_id] = state
+            print(f"Irrelevant question in handoff stage from {user}: '{body}'")
+            handle_irrelevant_question(tw, user, body)
+            # return Response(str(tw), media_type="application/xml")
+        
+        # tw.message("You're already connected with our estimator. They'll help you further.")
         return Response(str(tw), media_type="application/xml")
 
-    # Stage: waiting_service
-    if stage == "waiting_service":
+    # ===== Stage machine =====
+    if state["stage"] == "waiting_service":
         if body in services:
             state["service"] = services[body]
             state["stage"] = "waiting_location"
             tw.message(
-                f"**Great — {state['service']}**\n"
-                "Please type your location\n"
-                "Examples: JVC – Seasons Community, Business Bay – Bay Square, Marina – Torch Tower"
+                f"Great — {state['service']}.\nPlease type your location (community + building/landmark)."
             )
         else:
-            tw.message(rag_fallback(body))
-        sessions[user_id] = state
+            tw.message("Please reply with a valid number (1–11).")
+        sessions[user] = state
         return Response(str(tw), media_type="application/xml")
 
-    # Stage: waiting_location
-    if stage == "waiting_location":
+    if state["stage"] == "waiting_location":
         if body:
             state["location"] = body
             state["stage"] = "offer_actions"
-            tw.message(
-                f"**Got it: {state['location']}**\n\nWhat would you like to do next?\n"
-                "1. Book free site visit\n"
-                "2. Talk to expert\n"
-                "Reply with 1 or 2"
-            )
+            send_actions_menu(tw, state["location"])
         else:
-            tw.message(rag_fallback(body))
-        sessions[user_id] = state
+            tw.message("Location cannot be empty. Please type your location.")
+        sessions[user] = state
         return Response(str(tw), media_type="application/xml")
 
-    # Stage: offer_actions
-    if stage == "offer_actions":
+    if state["stage"] == "offer_actions":
         if body == "1":
             state["stage"] = "choose_slot"
-            tw.message(
-                "**Please choose a time slot:**\n"
-                "1. Today 6–8 pm\n"
-                "2. Tomorrow 10–12 am\n"
-                "3. Tomorrow 4–6 pm\n"
-                "Reply with 1, 2 or 3"
-            )
+            send_slot_menu(tw, state["location"])
         elif body == "2":
-            send_expert_details(tw, state)
+            handoff_message(tw, state, user)
+            state["stage"] = "handoff"
         else:
-            tw.message(rag_fallback(body))
-        sessions[user_id] = state
+            tw.message("Please reply with 1 or 2.")
+        sessions[user] = state
         return Response(str(tw), media_type="application/xml")
 
-    # Stage: choose_slot
-    if stage == "choose_slot":
+    if state["stage"] == "choose_slot":
         if body in time_slots:
-            slot = time_slots[body]
-            state["stage"] = "done"
+            state["slot"] = time_slots[body]
             tw.message(
-                f"**Booked ✅**\n"
-                f"Slot: **{slot}**\n"
-                f"Location: **{state.get('location', '—')}**\n\n"
-                "Reply *RESCHEDULE* or *CANCEL* anytime."
+                f"Booked ✅\n"
+                f"Slot: {state['slot']}\n"
+                f"Location: {state['location']}\n"
+                f"Our team will reach out shortly."
             )
+            # No RESCHEDULE/CANCEL line anymore 🚫
+            # handoff_message(tw, state, user)
+            state["stage"] = "handoff"
         else:
-            tw.message(rag_fallback(body))
-        sessions[user_id] = state
+            tw.message("Please reply with 1, 2, or 3 for slot selection.")
+        sessions[user] = state
         return Response(str(tw), media_type="application/xml")
 
-    # ===== Default: RAG fallback =====
-    faq_answer = lookup_faq(body)
-    if faq_answer:
-        tw.message(faq_answer + "\n1. Book free site visit\n2. Talk to expert")
-    else:
-        tw.message(rag_fallback(body))
-
-    sessions[user_id] = state
+    # ===== Fallback for out-of-scope queries =====
+    # For any other stage that's not handoff, use the original fallback
+    tw.message("I don't know. Please connect with our expert.")
     return Response(str(tw), media_type="application/xml")
