@@ -21,7 +21,7 @@ app.add_middleware(
 
 # Initialize the chatbot
 # pdf_path = 'C:/Users/admin/Documents/Document/Bot/src/FSTC_Contact.pdf'
-pdf_path = '/home/ubuntu/Whatsapp/Emaar_FAQ.pdf'
+pdf_path = '/home/ubuntu/Whatsapp/ServiceZoneUAE.pdf'
 chatbot = SalesRAGBot(pdf_path)
 
 class ChatInput(BaseModel):
@@ -41,8 +41,8 @@ async def chat(chat_input: ChatInput):
         result = chatbot.process_message(chat_input.message)
         return ChatResponse(
             response=result['response'],
-            # lead_info=result['lead_info'],
-            # lead_state=result['lead_state']
+            lead_info=result['lead_info'],
+            lead_state=result['lead_state']
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
