@@ -8,7 +8,7 @@ def main():
     pdf_path = 'ServiceZoneUAE.pdf'  # Update as needed
     agent = SalesRAGAgent(pdf_path)
     
-    # print("Welcome to the Agentic Sales Assistant! Type 'quit' to exit.")
+    print("Welcome to the Agentic Sales Assistant! Type 'quit' to exit.")
     while True:
         user_input = input("\nYou: ").strip()
         if user_input.lower() == 'quit':
