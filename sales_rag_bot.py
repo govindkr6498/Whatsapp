@@ -134,3 +134,4 @@ Assistant:"
             if len(parts) == 2 and all(p.isdigit() for p in parts):
                 parsed_time = parts[0].zfill(2) + ":" + parts[1].zfill(2)
         return parsed_time
+        
