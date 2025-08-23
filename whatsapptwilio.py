@@ -2,8 +2,9 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import Response
 from twilio.twiml.messaging_response import MessagingResponse
+from twilio.rest import Client   # NEW
 import time
-
+import os
 from main import SalesRAGAgent
 
 app = FastAPI()
@@ -12,6 +13,19 @@ app = FastAPI()
 pdf_path = 'ServiceZoneUAE.pdf'
 chatbot = SalesRAGAgent(pdf_path)
 sessions = {}  # simple in-memory session store
+
+# ===== Twilio Config (NEW) =====
+ACCOUNT_SID = os.getenv("ACCOUNT_SID") 
+AUTH_TOKEN = os.getenv("AUTH_TOKEN") 
+Content_Template_SID = os.getenv("Content_Template_SID") 
+TWILIO_WHATSAPP = "whatsapp:+971557021859"   # Twilio sandbox or WhatsApp enabled number
+ADMIN_NOTIFY_NUMBER = "whatsapp:+971505481357"   # your number to receive alerts
+client = Client(ACCOUNT_SID, AUTH_TOKEN)
+
+# Expert contact
+expert_name = "Mohammad"
+expert_phone_raw = "971505481357" 
+expert_phone_disp = "+971505481357"
 
 # ===== Business data =====
 services = {
@@ -39,10 +53,7 @@ time_slots = {
     "8": "Tomorrow 4–6 pm",
 }
 
-# Expert contact
-expert_name = "Mohammad"
-expert_phone_raw = "971505481357" 
-expert_phone_disp = "+971505481357"
+
 
 # Keywords
 PRICING_KEYWORDS = {
@@ -84,7 +95,6 @@ def send_service_menu(tw: MessagingResponse) -> None:
         "9. Home painting\n"
         "10. Door Painting\n"
         "11. other options\n"
-        
         "Reply with the number of your choice (1 to 11)"
     )
 
@@ -126,46 +136,47 @@ def handoff_message(tw: MessagingResponse, state: dict, user_id: str) -> None:
 
     tw.message("Got it — connecting you to our painting estimator now.")
     tw.message(f"Painting Estimator – {expert_name} ({expert_phone_disp})")
-    tw.message(f"You can also chat directly here: {deep_link}")
+    tw.message(f"{deep_link}")
 
 def send_expert_contact(tw: MessagingResponse) -> None:
-    """Send expert contact information"""
     tw.message(f"Please contact our painting estimator directly for pricing questions:")
     tw.message(f"👤 {expert_name}")
     tw.message("https://wa.me/971505481357")
-    # tw.message("They'll help you with all your pricing queries.")
-
-# def handle_irrelevant_question(tw: MessagingResponse, user: str, body: str) -> None:
-#     """Handle irrelevant questions after meeting schedule or expert communication"""
-#     print(f"Irrelevant question from user {user}: '{body}'")
-#     # tw.message("I don't know.")
-#     reply_text = chatbot.process(body)['response']
-#     print(f"reply_text : '{reply_text}'")
-#     # Twilio WhatsApp response
-#     twilio_resp = MessagingResponse()
-#     print(f"twilio_resp : '{twilio_resp}'")
-#     twilio_resp.message(reply_text)  
-#     print(f"twilio_resp After: '{twilio_resp}'")
-#     # return Response(content=str(twilio_resp), media_type="application/xml")    
-#     return Response(content=str(twilio_resp), media_type="application/xml")
 
 def handle_irrelevant_question(tw: MessagingResponse, user: str, body: str) -> None:
-    """Handle irrelevant questions after meeting schedule or expert communication"""
     print(f"Irrelevant question from user {user}: '{body}'")
-    
-    # Use the chatbot to get the response
     reply_text = chatbot.process(body)['response']
     print(f"reply_text : '{reply_text}'")
-    
-    # Add the response to the existing tw object (don't create a new one)
     tw.message(reply_text)
     print(f"Response added to tw object")
+
+
+import json
+def notify_admin_new_user(user: str, body: str) -> None:
+    try:
+        client.messages.create(
+            from_=TWILIO_WHATSAPP,
+            to=ADMIN_NOTIFY_NUMBER,
+            content_sid=Content_Template_SID,  
+            content_variables=json.dumps({
+                "1": f"{user}"
+            })
+        )
+        print(f"✅ Notified admin about first-time user {user}")
+    except Exception as e:
+        print(f"❌ Failed to notify admin: {e}")
+
+
 # ===== Webhook =====
 @app.post("/webhook/whatsapp")
 async def whatsapp_webhook(request: Request):
     form = await request.form()
     body = normalize(form.get("Body"))
     user = (form.get("From") or "").replace("whatsapp:", "")
+
+    # --- First time user detection (NEW) ---
+    if user not in sessions:
+        notify_admin_new_user(user, body)
 
     state = sessions.get(user, {"stage": "waiting_service"})
     tw = MessagingResponse()
@@ -188,10 +199,8 @@ async def whatsapp_webhook(request: Request):
     # ---- Global pricing trigger (only valid AFTER step 4)
     if contains_pricing(body):
         if is_after_step4(state):
-            # Already connected with expert - provide expert contact details
             send_expert_contact(tw)
         else:
-            # Not yet connected - connect them to expert
             handoff_message(tw, state, user)
             state["stage"] = "handoff"
             sessions[user] = state
@@ -199,19 +208,13 @@ async def whatsapp_webhook(request: Request):
 
     # ---- If already handed off - handle irrelevant questions
     if state.get("stage") == "handoff":
-        # Check if it's a relevant question (gratitude, pricing, etc.)
         if body in GRATITUDE or body in ACKS:
-            # These are handled above in global sections
             pass
         elif contains_pricing(body):
-            # Pricing questions are handled above in the global pricing section
             pass
         else:
             print(f"Irrelevant question in handoff stage from {user}: '{body}'")
             handle_irrelevant_question(tw, user, body)
-            # return Response(str(tw), media_type="application/xml")
-        
-        # tw.message("You're already connected with our estimator. They'll help you further.")
         return Response(str(tw), media_type="application/xml")
 
     # ===== Stage machine =====
@@ -258,15 +261,12 @@ async def whatsapp_webhook(request: Request):
                 f"Location: {state['location']}\n"
                 f"Our team will reach out shortly."
             )
-            # No RESCHEDULE/CANCEL line anymore 🚫
-            # handoff_message(tw, state, user)
             state["stage"] = "handoff"
         else:
             tw.message("Please reply with 1, 2, or 3 for slot selection.")
         sessions[user] = state
         return Response(str(tw), media_type="application/xml")
 
-    # ===== Fallback for out-of-scope queries =====
-    # For any other stage that's not handoff, use the original fallback
+    # ===== Fallback =====
     tw.message("I don't know. Please connect with our expert.")
     return Response(str(tw), media_type="application/xml")
